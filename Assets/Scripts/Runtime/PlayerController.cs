@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 namespace Limworks.PlayerController
 {
@@ -15,7 +16,7 @@ namespace Limworks.PlayerController
         public float CollisionQueryRadius = 10.0f;
 
         public Camera Camera;
-        public Collider Collider;
+        public CapsuleCollider Collider;
 
         public float AirControl = 0.25f;
         public float AirControlTime = 1.0f;
@@ -69,6 +70,9 @@ namespace Limworks.PlayerController
             DebugGizmoQueue.Clear();
         }
 
+        bool init = false;
+        Vector3 originalColliderCenter;
+        float originalColliderHeight;
         // Start is called before the first frame update
         void Start()
         {
@@ -86,6 +90,10 @@ namespace Limworks.PlayerController
             transform.parent = GravityTransform;
             AnchorPoint.transform.position = transform.position;
 
+            originalColliderCenter = Collider.center;
+            originalColliderHeight = Collider.height;
+
+            init = true;
             //FootPosition = transform.TransformPoint(FootPosition_local);
             //HeadPosition = transform.TransformPoint(HeadPosition_local);
             //var pHeight = Vector3.Distance(FootPosition, HeadPosition);
@@ -162,35 +170,6 @@ namespace Limworks.PlayerController
             {
                 Time.timeScale = 1.0f;
             }
-        }
-
-        static Vector3 ApplyCapsuleCollision(Transform transform, Vector3 up, CapsuleCollider collider, Vector3 previousPosition, Vector3 currentPosition, LayerMask layerMask)
-        {
-            var t0 = transform.TransformPoint(collider.center);
-            var h0 = transform.TransformVector(new Vector3(0, collider.height, 0)).magnitude;
-
-            var p0 = t0 + up * h0 * 0.5f;
-            var p1 = t0 - up * h0 * 0.5f;
-
-            var rad = collider.radius;
-            var dir = currentPosition - previousPosition;
-            var dirn = dir.normalized;
-
-            Debug.DrawLine(p0, p1, Color.green);
-
-            p0 -= dir;
-            p1 -= dir;
-            const float padding = 0.1f;
-            float mag = dir.magnitude;
-            var hit = Physics.CapsuleCast(p0, p1, rad, dir.normalized, out RaycastHit dhit, mag + padding, layerMask);
-            if (hit)
-            {
-                if(dhit.distance <= mag)
-                {
-                    return previousPosition + dirn * dhit.distance;
-                }
-            }
-            return currentPosition;
         }
 
         static Vector3 ApplyCollisionPhysics(Vector3 position, Quaternion rotation, 
@@ -287,7 +266,7 @@ namespace Limworks.PlayerController
 
                 //find exact distance to ground from foot
                 float diff = playerHeight - (hit.distance - downSpeedTime + sphereRadius);
-
+                hit.distance = diff;
                 var projectedPos = position + Vector3.Project(velocity, hit.normal) * Time.fixedDeltaTime;
                 var posDiff = projectedPos - position;
                 
@@ -301,7 +280,7 @@ namespace Limworks.PlayerController
 
             return isHit;
         }
-       
+      
         struct GroundingInfo
         {
             public bool grounded;
@@ -316,18 +295,25 @@ namespace Limworks.PlayerController
         Vector3 groundDrag;
         Vector3 anchorPointVelocity = Vector3.zero;
         bool isColliding = false;
+        bool overrideColldierPropFor1Frame = false;
 
         public float AirMovementTimer = 0;
         public float CurrentMovingSpeed = 0;
 
         void FixedUpdate()
         {
+            transform.hasChanged = false;
+
             anchorPointVelocity = (AnchorPoint.transform.position - transform.position) / Time.fixedDeltaTime;
             transform.position = AnchorPoint.transform.position;
 
             ClearGizmos();
             FootPosition = transform.TransformPoint(FootPosition_local);
             HeadPosition = transform.TransformPoint(HeadPosition_local);
+
+            float stepSize = 0.0f;
+            var bottomCol = Collider.ClosestPoint(FootPosition);
+            stepSize = Vector3.Distance(FootPosition, bottomCol);
 
             //input direction should always be perpendicular to gravity direction
             var corrected_inputDirection = transform.TransformVector(InputDirection);
@@ -340,12 +326,16 @@ namespace Limworks.PlayerController
             //calcualte input force
             Vector3 inputForce = MovementAcceleration * corrected_inputDirection;
             var gravity = Gravity;
+            
+            bool aboveMaxAngle = groundingInfo.groundAngle >= MaxSlopeAngle;
+            bool aboveMaxSpeed = CurrentMovingSpeed >= (MovementSpeed + 1);
+            bool applyNormalBreaksAndDrag = !aboveMaxSpeed && !aboveMaxAngle;
 
             //jumping
             Vector3 jumpVelocityOffset = Vector3.zero;
             if (JumpsMade == 0)
             {
-                if (jump == 1.0f && (groundingInfo.grounded || TimeSinceLastGrounding < JumpTimeBuffer))
+                if (jump == 1.0f && ((groundingInfo.grounded && !aboveMaxAngle) || TimeSinceLastGrounding < JumpTimeBuffer))
                 {
                     JumpsMade++;
                     jump = 1.0f;
@@ -396,10 +386,6 @@ namespace Limworks.PlayerController
             inputForce *= slopeDot;
             Vector3 appliedForces = gravity + inputForce;
 
-            bool aboveMaxAngle = groundingInfo.groundAngle >= MaxSlopeAngle;
-            bool aboveMaxSpeed = CurrentMovingSpeed >= (MovementSpeed + 1);
-            bool applyNormalBreaksAndDrag = !aboveMaxSpeed && !aboveMaxAngle;
-
             //if were not grounded, either because we fell or jumped, we doint want to apply input forces
             //if (!groundingInfo.grounded)
             //{
@@ -430,8 +416,9 @@ namespace Limworks.PlayerController
                 }
             }
 
+            //ground collision
             var position = transform.position;
-            if(GroundCollision(ref position, Velocity, HeadPosition, transform.up, 0.25f, FootPosition, CollisionMask, out RaycastHit hit))
+            if (GroundCollision(ref position, Velocity, HeadPosition, transform.up, 0.25f, FootPosition, CollisionMask, out RaycastHit hit))
             {
                 groundingInfo.grounded = true;
                 groundingInfo.groundNormal = hit.normal;
@@ -474,12 +461,9 @@ namespace Limworks.PlayerController
                 Velocity = Vector3.ProjectOnPlane(Velocity, groundingInfo.groundNormal);
             }
 
-            Debug.DrawRay(FootPosition, hit.normal * 10, Color.blue);
-            Debug.DrawRay(transform.position, Velocity.normalized * 10);
-
+            //velocity management
             if (!groundingInfo.grounded || !applyNormalBreaksAndDrag)
             {
-
                 //this is for when the grounding ray cannot detect the ground because of collision with body
                 if (!groundingInfo.grounded && isColliding)
                 {
@@ -528,6 +512,48 @@ namespace Limworks.PlayerController
                 Velocity = Vector3.Lerp(Velocity, horizontalVelocity, AirControl);
             }
 
+            void FillCollider(Vector3 foot, Vector3 top)
+            {
+                const float padding = 0.1f;
+                Vector3 paddedFootPos = (foot + transform.up * padding);
+                Vector3 newCenter = (top + paddedFootPos) * 0.5f;
+                float newHeight = Vector3.Distance(top, paddedFootPos);
+                Collider.center = transform.InverseTransformPoint(newCenter);
+                Collider.height = newHeight;
+            }
+            void ReverCollider()
+            {
+                Collider.center = originalColliderCenter;
+                Collider.height = originalColliderHeight;
+            }
+            //check if we can even walk towards that position
+            //this is for edge case collision
+            void PerformWedgeCollision()
+            {
+                var vel = Velocity * Time.fixedDeltaTime;
+                var nextHead = HeadPosition + vel;
+                Ray ray = new Ray(nextHead, transform.up);
+                if (Physics.Raycast(ray, out RaycastHit hitinfo, float.MaxValue, CollisionMask))
+                {
+                    var nextFoot = FootPosition + vel;
+                    Vector3 topCollider = transform.TransformPoint(Collider.center + Vector3.up * Collider.height * 0.5f) + vel;
+                    var topToFootDist = Vector3.Distance(topCollider, nextFoot);
+                    var hitDistance = Vector3.Distance(hitinfo.point, nextFoot);
+                    QueueGizmo((a) => { Gizmos.color = Color.white; });
+                    QueueGizmo((a) => { Gizmos.DrawSphere((Vector3)a[0], (float)a[1]); }, topCollider, 0.2f);
+                    QueueGizmo((a) => { Gizmos.color = new Color(1, 0, 1, 0.5f); });
+                    QueueGizmo((a) => { Gizmos.DrawWireSphere((Vector3)a[0], (float)a[1]); }, hitinfo.point, 0.25f);
+
+                    if (hitDistance <= topToFootDist)
+                    {
+                        FillCollider(nextFoot, topCollider);
+                    }
+                }
+            }
+
+            Debug.DrawRay(FootPosition, hit.normal * 10, Color.blue);
+            Debug.DrawRay(transform.position, Velocity.normalized * 10);
+
             //apply velocity to position
             lastPosition = transform.position;
             transform.position = lastPosition + Velocity * Time.fixedDeltaTime;
@@ -535,6 +561,9 @@ namespace Limworks.PlayerController
             //perform physics collision
             transform.position = ApplyCollisionPhysics(transform.position, transform.rotation, ref Velocity, null,
                 Collider, CollisionQueryRadius, CollisionMask, out isColliding, 8);
+
+            ReverCollider();
+            PerformWedgeCollision();
 
             if (groundingInfo.grounded)
             {
