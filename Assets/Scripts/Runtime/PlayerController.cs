@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
+using static UnityEngine.GraphicsBuffer;
 
 namespace Limworks.PlayerController
 {
@@ -168,11 +169,13 @@ namespace Limworks.PlayerController
 
             if (flipGravity)
             {
-                Gravity = Vector3.RotateTowards(Gravity, new Vector3(0, 9.81f, 0), 15f* Time.deltaTime, 0);
+                var target = Vector3.RotateTowards(Gravity, new Vector3(0, 9.81f, 0), 15f* Time.deltaTime, 0);
+                SetGravity(target);
             }
             else
             {
-                Gravity = Vector3.RotateTowards(Gravity, new Vector3(0, -9.81f, 0), 15f * Time.deltaTime, 0);
+                var target = Vector3.RotateTowards(Gravity, new Vector3(0, -9.81f, 0), 15f * Time.deltaTime, 0);
+                SetGravity(target);
             }
 
             var cameraDelta = GetCameraControlDelta(CameraSensitivity);
@@ -208,6 +211,38 @@ namespace Limworks.PlayerController
             var corrected_inputDirection = transform.TransformVector(direction);
             corrected_inputDirection = Vector3.ClampMagnitude(corrected_inputDirection, 1.0f);
             inputForce = corrected_inputDirection * MovementAcceleration;
+        }
+        public Vector3 position
+        {
+            get
+            {
+                if (hasrgb)
+                {
+                    return rigidbody1.position;
+                }
+                else
+                {
+                    return transform.position;
+                }
+            }
+            set
+            {
+                if (hasrgb)
+                {
+                    rigidbody1.position = value;
+                }
+                else
+                {
+                    transform.position = value;
+                }
+            }
+        }
+        public void SetGravity(Vector3 gravity)
+        {
+            var originalPosition = transform.position;
+            GravityTransform.up = -gravity.normalized;
+            transform.position = originalPosition;
+            Gravity = gravity;
         }
         public Vector3 GetVelocity()
         {
