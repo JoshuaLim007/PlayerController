@@ -1,3 +1,4 @@
+using PlasticGui.Help.Conditions;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -7,37 +8,44 @@ using UnityEngine.UIElements;
 
 namespace Limworks.PlayerController
 {
+    [RequireComponent(typeof(CapsuleCollider))]
     public class PlayerController : MonoBehaviour
     {
-        public LayerMask CollisionMask = 0b1;
-        public Vector3 Gravity = Vector3.down * 9.81f;
-        public Vector3 FootPosition_local;
-        public Vector3 HeadPosition_local;
-        public float CollisionQueryRadius = 10.0f;
-
         public Camera Camera;
         public CapsuleCollider Collider;
+        public PhysicMaterial PhysicMaterial;
 
+        [Header("Exposed fields")]
+        public LayerMask CollisionMask = 0b1;
+        public Vector3 Gravity = Vector3.down * 9.81f;
+        public Vector3 FootPosition_local = -Vector3.up;
+        public Vector3 HeadPosition_local = Vector3.up;
+        public float CollisionQueryRadius = 10.0f;
         public float AirControl = 0.25f;
         public float AirControlTime = 1.0f;
         public float CameraSensitivity = 15.0f;
         public float MovementSpeed = 15;
-        public float MovementAcceleration = 100;
-        public float JumpStrength = 500;
-        public float GroundingDistance = 0.125f;
+        public float JumpStrength = 5;
         public float DragCoeff = 0.95f;
         public float BreakingForce = 10.0f;
         public float SlippingBreakingForce = 25.0f;
         public float JumpTimeBuffer = 0.25f;
-        float TimeSinceLastGrounding = 0.0f;
         public float MaxSlopeAngle = 70.0f;
         public float MaxStepHeight = 0.25f;
-        int JumpsMade = 0;
         public int MaxJumps = 1;
-        public Vector3 Velocity;
 
+        [Header("Read only fields")]
+        [SerializeField] float MovementAcceleration = 100;
+        [SerializeField] Vector3 Velocity = Vector3.zero;
+
+        public GroundingInfo GroundedData => groundingInfo;
+
+        float TimeSinceLastGrounding = 0.0f;
+        int JumpsMade = 0;
         Transform GravityTransform;
         Transform AnchorPoint;
+        Rigidbody rigidbody1;
+        bool hasrgb => rigidbody1 != null && !rigidbody1.isKinematic;
 
         delegate void ParamsAction(object[] arguments);
         class DebugGizmo
@@ -75,6 +83,18 @@ namespace Limworks.PlayerController
         // Start is called before the first frame update
         void Start()
         {
+            rigidbody1 = GetComponent<Rigidbody>();
+            if (hasrgb)
+            {
+                rigidbody1.useGravity = false;
+                rigidbody1.freezeRotation = true;
+                Collider.material = PhysicMaterial;
+                rigidbody1.interpolation = RigidbodyInterpolation.Interpolate;
+                rigidbody1.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+                projectedRgbPosition = rigidbody1.position;
+            }
+
+            Collider = GetComponent<CapsuleCollider>();
             DebugGizmoQueue = new List<DebugGizmo>();
             AnchorPoint = new GameObject().transform;
             AnchorPoint.name = "PlayerAnchorPoint_runtime";
@@ -133,13 +153,27 @@ namespace Limworks.PlayerController
             return InputDirection;
         }
 
+        bool flipGravity = false;
         float cameraXRotation = 0;
-
         // Update is called once per frame
         void Update()
         {
             GravityTransform.up = -Gravity.normalized;
-            
+
+            //INPUT
+            if (Input.GetKeyDown(KeyCode.T))
+            {
+                flipGravity = !flipGravity;
+            }
+
+            if (flipGravity)
+            {
+                Gravity = Vector3.RotateTowards(Gravity, new Vector3(0, 9.81f, 0), 15f* Time.deltaTime, 0);
+            }
+            else
+            {
+                Gravity = Vector3.RotateTowards(Gravity, new Vector3(0, -9.81f, 0), 15f * Time.deltaTime, 0);
+            }
 
             var cameraDelta = GetCameraControlDelta(CameraSensitivity);
             {
@@ -156,6 +190,7 @@ namespace Limworks.PlayerController
                 Jump();
             }
             SetInputForce(InputDirection, MovementSpeed);
+            //
         }
 
         Vector3 inputForce = Vector3.zero;
@@ -210,6 +245,10 @@ namespace Limworks.PlayerController
         {
             return finalForce;
         }
+        public float GetMovingSpeed()
+        {
+            return CurrentMovingSpeed;
+        }
 
 
         static Vector3 ApplyCollisionPhysics(Vector3 position, Quaternion rotation, 
@@ -242,8 +281,23 @@ namespace Limworks.PlayerController
 
                     if (intersecting)
                     {
-                        var dot = -Vector3.Dot(velocity, Dir);
+                        //var rgb = item.TryGetComponent(out Rigidbody rigidbody);
+                        //if (rgb)
+                        //{
+                        //    var dir = (rigidbody.worldCenterOfMass - position).normalized;
+                        //    var hisVel = rigidbody.velocity;
+                        //    float m1 = 1.0f;
+                        //    float m2 = rigidbody.mass;
+                        //    var totalMass = m2 + m1;
+                        //    var v1 = Vector3.Project(velocity, dir);
+                        //    var v2 = Vector3.Project(hisVel, -dir);
+                        //    var netVel = v1 + v2;
+                        //    //perform ellastic collision
+                        //    rigidbody.velocity = (2 * m1 / totalMass) * netVel  - ((m1 - m2) / totalMass) * v2;
+                        //    velocity = ((m1 - m2) / totalMass) * netVel         + (2 * m2 / totalMass) * v2;
+                        //}
 
+                        var dot = -Vector3.Dot(velocity, Dir);
                         var velocityOffset = Dir * dot;
                         velocity += velocityOffset;
                         hit = true;
@@ -255,6 +309,20 @@ namespace Limworks.PlayerController
                                 forces[x] += Dir * dot;
                             }
                         }
+
+                        //if (rgb)
+                        //{
+                        //    float m1 = 1.0f;
+                        //    float m2 = rigidbody.mass;
+                        //    var totalMass = m2 + m1;
+                        //    position += Dir * Dist * m2 / totalMass;
+                        //    rigidbody.position -= Dir * Dist * m1 / totalMass;
+                        //}
+                        //else
+                        //{
+                        //    position += Dir * Dist;
+                        //}
+
                         position += Dir * Dist;
                     }
                 }
@@ -293,7 +361,7 @@ namespace Limworks.PlayerController
             float playerHeight = Vector3.Distance(rayOrigin, footPosition);
             var downSpeed = Vector3.Dot(velocity, -up);
 
-            const float padding = 0.01f;
+            const float padding = 0.0125f;
 
             float sphereRadius = radius;
             float downSpeedTime = downSpeed * Time.fixedDeltaTime;
@@ -338,8 +406,8 @@ namespace Limworks.PlayerController
 
             return isHit;
         }
-      
-        struct GroundingInfo
+
+        public struct GroundingInfo
         {
             public bool grounded;
             public float groundAngle;
@@ -353,16 +421,48 @@ namespace Limworks.PlayerController
         Vector3 groundDrag;
         Vector3 anchorPointVelocity = Vector3.zero;
         bool isColliding = false;
+        float AirMovementTimer = 0;
+        float CurrentMovingSpeed = 0;
 
-        public float AirMovementTimer = 0;
-        public float CurrentMovingSpeed = 0;
+        Vector3 projectedRgbPosition;
+        Vector3 GetPosition()
+        {
+            if (hasrgb)
+            {
+                return projectedRgbPosition;
+            }
+            else
+            {
+                return transform.position;
+            }
+        }
+        void SetPosition(Vector3 position)
+        {
+            if (hasrgb)
+            {
+                projectedRgbPosition = position;
+            }
+            else
+            {
+                transform.position = position;
+            }
+        }
 
+        Vector3 initialRgbPos;
         void FixedUpdate()
         {
             transform.hasChanged = false;
 
-            anchorPointVelocity = (AnchorPoint.transform.position - transform.position) / Time.fixedDeltaTime;
-            transform.position = AnchorPoint.transform.position;
+            if (hasrgb)
+            {
+                initialRgbPos = GetPosition();
+            }
+
+            if (!hasrgb)
+            {
+                anchorPointVelocity = (AnchorPoint.transform.position - GetPosition()) / Time.fixedDeltaTime;
+                SetPosition(AnchorPoint.transform.position);
+            }
 
             ClearGizmos();
             FootPosition = transform.TransformPoint(FootPosition_local);
@@ -470,14 +570,14 @@ namespace Limworks.PlayerController
             }
 
             //ground collision
-            var position = transform.position;
+            var position = GetPosition();
             if (GroundCollision(ref position, Velocity, HeadPosition, transform.up, Collider.radius, FootPosition, CollisionMask, out RaycastHit hit, MaxStepHeight))
             {
                 groundingInfo.grounded = true;
                 groundingInfo.groundNormal = hit.normal;
                 groundingInfo.groundAngle = Vector3.Angle(hit.normal, transform.up);
                 groundingInfo.rayData = hit;
-                transform.position = position;
+                SetPosition(position);
             }
             else
             {
@@ -520,7 +620,7 @@ namespace Limworks.PlayerController
                 //this is for when the grounding ray cannot detect the ground because of collision with body
                 if (!groundingInfo.grounded && isColliding)
                 {
-                    if(Physics.SphereCast(transform.position, 0.25f, inputForce.normalized, out RaycastHit dhit, CollisionQueryRadius - 0.25f, CollisionMask))
+                    if(Physics.SphereCast(GetPosition(), 0.25f, inputForce.normalized, out RaycastHit dhit, CollisionQueryRadius - 0.25f, CollisionMask))
                     {
                         Velocity -= inputForce * Time.fixedDeltaTime;
                         inputForce = Vector3.ProjectOnPlane(inputForce, dhit.normal);
@@ -605,14 +705,30 @@ namespace Limworks.PlayerController
             Debug.DrawRay(transform.position, Velocity.normalized * 10);
 
             //apply velocity to position
-            lastPosition = transform.position;
-            transform.position = lastPosition + Velocity * Time.fixedDeltaTime;
-
+            lastPosition = GetPosition();
+            SetPosition(lastPosition + Velocity * Time.fixedDeltaTime);
             //perform physics collision
-            transform.position = ApplyCollisionPhysics(transform.position, transform.rotation, ref Velocity, null, Collider, CollisionQueryRadius, CollisionMask, out isColliding, 8);
+
+            if (!hasrgb)
+            {
+                SetPosition(ApplyCollisionPhysics(GetPosition(), transform.rotation, ref Velocity, null, Collider, CollisionQueryRadius, CollisionMask, out isColliding, 8));
+            }
 
             //RevertCollider();
             //PerformWedgeCollision();
+
+            else
+            {
+                var pos = ApplyCollisionPhysics(GetPosition(), transform.rotation, ref Velocity, null, Collider, CollisionQueryRadius, CollisionMask, out isColliding, 8);
+
+                var wantedPosition = GetPosition();
+                SetPosition(initialRgbPos);
+
+                var velocity = (wantedPosition - initialRgbPos) / Time.fixedDeltaTime;
+                rigidbody1.velocity = velocity;
+
+                CurrentMovingSpeed = velocity.magnitude;
+            }
 
             if (groundingInfo.grounded)
             {
@@ -624,9 +740,12 @@ namespace Limworks.PlayerController
                 anchorPointVelocity = Vector3.zero;
                 AnchorPoint.transform.SetParent(null, true);
             }
-            AnchorPoint.transform.position = transform.position;
+            AnchorPoint.transform.position = GetPosition();
 
-            CurrentMovingSpeed = Vector3.Distance(lastPosition, transform.position) / Time.fixedDeltaTime;
+            if (!hasrgb)
+            {
+                CurrentMovingSpeed = Vector3.Distance(lastPosition, GetPosition()) / Time.fixedDeltaTime;
+            }
 
             //reset inptus
             jump = 0;
