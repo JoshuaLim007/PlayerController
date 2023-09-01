@@ -29,18 +29,17 @@ namespace Limworks.PlayerController
         public float BreakingForce = 10.0f;
         public float SlippingBreakingForce = 25.0f;
         public float JumpTimeBuffer = 0.25f;
-        public float TimeSinceLastGrounding = 0.0f;
+        float TimeSinceLastGrounding = 0.0f;
         public float MaxSlopeAngle = 70.0f;
-        public int JumpsMade = 0;
+        public float MaxStepHeight = 0.25f;
+        int JumpsMade = 0;
         public int MaxJumps = 1;
-
         public Vector3 Velocity;
-        public Vector3 InputDirection;
 
         Transform GravityTransform;
         Transform AnchorPoint;
 
-        public delegate void ParamsAction(object[] arguments);
+        delegate void ParamsAction(object[] arguments);
         class DebugGizmo
         {
             public ParamsAction function;
@@ -71,8 +70,8 @@ namespace Limworks.PlayerController
         }
 
         bool init = false;
-        Vector3 originalColliderCenter;
-        float originalColliderHeight;
+        //Vector3 originalColliderCenter;
+        //float originalColliderHeight;
         // Start is called before the first frame update
         void Start()
         {
@@ -90,17 +89,16 @@ namespace Limworks.PlayerController
             transform.parent = GravityTransform;
             AnchorPoint.transform.position = transform.position;
 
-            originalColliderCenter = Collider.center;
-            originalColliderHeight = Collider.height;
 
             init = true;
-            //FootPosition = transform.TransformPoint(FootPosition_local);
-            //HeadPosition = transform.TransformPoint(HeadPosition_local);
-            //var pHeight = Vector3.Distance(FootPosition, HeadPosition);
-            //var pCenter = FootPosition + transform.up * pHeight * 0.5f;
-            //var colCenter_local = transform.InverseTransformPoint(pCenter);
-            //Collider.center = colCenter_local;
-            //Collider.height = transform.InverseTransformVector(new Vector3(0, pHeight, 0)).magnitude;
+
+            FootPosition = transform.TransformPoint(FootPosition_local);
+            HeadPosition = transform.TransformPoint(HeadPosition_local);
+            var pHeight = Vector3.Distance(FootPosition, HeadPosition);
+            var pCenter = FootPosition + transform.up * pHeight * 0.5f;
+            var colCenter_local = transform.InverseTransformPoint(pCenter);
+            Collider.center = colCenter_local;
+            Collider.height = transform.InverseTransformVector(new Vector3(0, pHeight, 0)).magnitude;
         }
 
         static Vector3 GetCameraControlDelta(float cameraSensitivity)
@@ -136,15 +134,14 @@ namespace Limworks.PlayerController
         }
 
         float cameraXRotation = 0;
-        float jump = 0;
 
         // Update is called once per frame
         void Update()
         {
             GravityTransform.up = -Gravity.normalized;
             
-            var cameraDelta = GetCameraControlDelta(CameraSensitivity);
 
+            var cameraDelta = GetCameraControlDelta(CameraSensitivity);
             {
                 cameraXRotation += cameraDelta.x;
                 cameraXRotation = Mathf.Clamp(cameraXRotation, -80, 80);
@@ -152,25 +149,68 @@ namespace Limworks.PlayerController
                 temp.x = cameraXRotation;
                 Camera.transform.localEulerAngles = temp;
             }
-            
             transform.localEulerAngles += Vector3.up * cameraDelta.y;
-            
-            InputDirection = GetMovementInput();
-            if(jump == 0)
+            var InputDirection = GetMovementInput();
+            if(jump == 0 && InputDirection.y == 1)
             {
-                jump = InputDirection.y;
+                Jump();
             }
-            InputDirection.y = 0;
-
-            if (Input.GetKey(KeyCode.V))
-            {
-                Time.timeScale = 0.25f;
-            }
-            else
-            {
-                Time.timeScale = 1.0f;
-            }
+            SetInputForce(InputDirection, MovementSpeed);
         }
+
+        Vector3 inputForce = Vector3.zero;
+        Vector3 totalExternalForces = Vector3.zero;
+        Vector3 finalForce = Vector3.zero;
+        float jump = 0;
+        public void SetInputForce(Vector3 direction, float speed)
+        {
+            MovementSpeed = speed;
+
+            var targetForce = ((MovementSpeed * MovementSpeed) * DragCoeff);
+            MovementAcceleration = targetForce;
+
+            direction.y = 0;
+            var corrected_inputDirection = transform.TransformVector(direction);
+            corrected_inputDirection = Vector3.ClampMagnitude(corrected_inputDirection, 1.0f);
+            inputForce = corrected_inputDirection * MovementAcceleration;
+        }
+        public Vector3 GetVelocity()
+        {
+            return Velocity;
+        }
+        public void AddVelocity(Vector3 velocity)
+        {
+            Velocity += velocity;
+        }
+        public void SetVelocity(Vector3 velocity)
+        {
+            Velocity = velocity;
+        }
+        public Vector3 GetInputForce()
+        {
+            return inputForce;
+        }
+        public void Jump()
+        {
+            jump = 1;
+        }
+        public void AddPersistentForce(Vector3 force)
+        {
+            totalExternalForces += force;
+        }
+        public void SetPersistentForce(Vector3 force)
+        {
+            totalExternalForces = force;
+        }
+        public Vector3 GetPersistentForce()
+        {
+            return totalExternalForces;
+        }
+        public Vector3 GetFinalForce()
+        {
+            return finalForce;
+        }
+
 
         static Vector3 ApplyCollisionPhysics(Vector3 position, Quaternion rotation, 
             ref Vector3 velocity, Vector3[] forces, Collider collider, 
@@ -246,36 +286,54 @@ namespace Limworks.PlayerController
         
         static bool GroundCollision(ref Vector3 position, Vector3 velocity, 
             Vector3 rayOrigin, Vector3 up, float radius, Vector3 footPosition, 
-            LayerMask layerMask, out RaycastHit hit)
+            LayerMask layerMask, out RaycastHit hit, float maxStepHeight = 0.25f)
         {
+            rayOrigin -= up * radius;
+
             float playerHeight = Vector3.Distance(rayOrigin, footPosition);
             var downSpeed = Vector3.Dot(velocity, -up);
 
             const float padding = 0.01f;
 
-            float sphereRadius = 0;// radius;
+            float sphereRadius = radius;
             float downSpeedTime = downSpeed * Time.fixedDeltaTime;
             float minRayDistance = playerHeight + padding + downSpeedTime - sphereRadius;
 
             Vector3 offset = Vector3.zero;
 
-            var isHit = Physics.Raycast(rayOrigin, - up, out hit, minRayDistance, layerMask);
+            var isHit = Physics.BoxCast(rayOrigin, Vector3.one * sphereRadius, -up, out hit, Quaternion.identity, minRayDistance, layerMask);
+            
+            QueueGizmo((a) =>
+            {
+                Gizmos.color = new Color(1, 1, 0, 0.25f);
+                var origin = rayOrigin  + up * radius * 0.5f - up * playerHeight * 0.5f;
+                var size = Vector3.one * sphereRadius * 2;
+                size.y = minRayDistance * 2;
+                Gizmos.DrawCube(origin, size);
+            });
+
             if (isHit)
             {
                 //float off = downSpeedTime;// Mathf.Min(downSpeedTime, 0);
-
                 //find exact distance to ground from foot
                 float diff = playerHeight - (hit.distance - downSpeedTime + sphereRadius);
-                hit.distance = diff;
-                var projectedPos = position + Vector3.Project(velocity, hit.normal) * Time.fixedDeltaTime;
-                var posDiff = projectedPos - position;
-                
-                //subtract the projected vertical position amount from position offset
-                var projHeight = Vector3.Dot(posDiff, up);
-                diff += Mathf.Min(projHeight, 0);
+                if (diff > maxStepHeight)
+                {
+                    isHit = false;
+                }
+                else
+                {
+                    hit.distance = diff;
+                    var projectedPos = position + Vector3.Project(velocity, hit.normal) * Time.fixedDeltaTime;
+                    var posDiff = projectedPos - position;
 
-                offset += up * diff;
-                position += offset;
+                    //subtract the projected vertical position amount from position offset
+                    var projHeight = Vector3.Dot(posDiff, up);
+                    diff += Mathf.Min(projHeight, 0);
+
+                    offset += up * diff;
+                    position += offset;
+                }
             }
 
             return isHit;
@@ -295,7 +353,6 @@ namespace Limworks.PlayerController
         Vector3 groundDrag;
         Vector3 anchorPointVelocity = Vector3.zero;
         bool isColliding = false;
-        bool overrideColldierPropFor1Frame = false;
 
         public float AirMovementTimer = 0;
         public float CurrentMovingSpeed = 0;
@@ -311,24 +368,20 @@ namespace Limworks.PlayerController
             FootPosition = transform.TransformPoint(FootPosition_local);
             HeadPosition = transform.TransformPoint(HeadPosition_local);
 
-            float stepSize = 0.0f;
-            var bottomCol = Collider.ClosestPoint(FootPosition);
-            stepSize = Vector3.Distance(FootPosition, bottomCol);
-
             //input direction should always be perpendicular to gravity direction
-            var corrected_inputDirection = transform.TransformVector(InputDirection);
-            corrected_inputDirection = Vector3.ClampMagnitude(corrected_inputDirection, 1.0f);
+            //var corrected_inputDirection = transform.TransformVector(InputDirection);
+            //corrected_inputDirection = Vector3.ClampMagnitude(corrected_inputDirection, 1.0f);
+
             var jumpDirection = transform.TransformVector(Vector3.up);
 
             var targetForce = ((MovementSpeed * MovementSpeed) * DragCoeff);
             MovementAcceleration = targetForce;
 
             //calcualte input force
-            Vector3 inputForce = MovementAcceleration * corrected_inputDirection;
+            //Vector3 inputForce = MovementAcceleration * corrected_inputDirection;
             var gravity = Gravity;
-            
             bool aboveMaxAngle = groundingInfo.groundAngle >= MaxSlopeAngle;
-            bool aboveMaxSpeed = CurrentMovingSpeed >= (MovementSpeed + 1);
+            bool aboveMaxSpeed = CurrentMovingSpeed >= (MovementSpeed * 1.2f);
             bool applyNormalBreaksAndDrag = !aboveMaxSpeed && !aboveMaxAngle;
 
             //jumping
@@ -384,7 +437,7 @@ namespace Limworks.PlayerController
             float slopeDot = (groundingInfo.grounded ? Vector3.Dot(groundingInfo.groundNormal, transform.up) : 1);
             slopeDot = Mathf.Pow(slopeDot, 1);
             inputForce *= slopeDot;
-            Vector3 appliedForces = gravity + inputForce;
+            Vector3 appliedForces = gravity + totalExternalForces + inputForce;
 
             //if were not grounded, either because we fell or jumped, we doint want to apply input forces
             //if (!groundingInfo.grounded)
@@ -400,7 +453,7 @@ namespace Limworks.PlayerController
             //}
 
             //only apply drag if we are under target movement speed
-            
+            finalForce = appliedForces;
             //apply net force
             Velocity += appliedForces * Time.fixedDeltaTime;
 
@@ -418,7 +471,7 @@ namespace Limworks.PlayerController
 
             //ground collision
             var position = transform.position;
-            if (GroundCollision(ref position, Velocity, HeadPosition, transform.up, 0.25f, FootPosition, CollisionMask, out RaycastHit hit))
+            if (GroundCollision(ref position, Velocity, HeadPosition, transform.up, Collider.radius, FootPosition, CollisionMask, out RaycastHit hit, MaxStepHeight))
             {
                 groundingInfo.grounded = true;
                 groundingInfo.groundNormal = hit.normal;
@@ -440,7 +493,7 @@ namespace Limworks.PlayerController
                 //apply breaks if we are not slipping and under our desired movement speed
                 if (applyNormalBreaksAndDrag)
                 {
-                    if (InputDirection == Vector3.zero && jump == 0)
+                    if (inputForce == Vector3.zero && jump == 0)
                     {
                         Velocity = ApplyBreaks(Velocity, BreakingForce);
                     }
@@ -512,44 +565,41 @@ namespace Limworks.PlayerController
                 Velocity = Vector3.Lerp(Velocity, horizontalVelocity, AirControl);
             }
 
-            void FillCollider(Vector3 foot, Vector3 top)
-            {
-                const float padding = 0.1f;
-                Vector3 paddedFootPos = (foot + transform.up * padding);
-                Vector3 newCenter = (top + paddedFootPos) * 0.5f;
-                float newHeight = Vector3.Distance(top, paddedFootPos);
-                Collider.center = transform.InverseTransformPoint(newCenter);
-                Collider.height = newHeight;
-            }
-            void ReverCollider()
-            {
-                Collider.center = originalColliderCenter;
-                Collider.height = originalColliderHeight;
-            }
-            //check if we can even walk towards that position
-            //this is for edge case collision
-            void PerformWedgeCollision()
-            {
-                var vel = Velocity * Time.fixedDeltaTime;
-                var nextHead = HeadPosition + vel;
-                Ray ray = new Ray(nextHead, transform.up);
-                if (Physics.Raycast(ray, out RaycastHit hitinfo, float.MaxValue, CollisionMask))
-                {
-                    var nextFoot = FootPosition + vel;
-                    Vector3 topCollider = transform.TransformPoint(Collider.center + Vector3.up * Collider.height * 0.5f) + vel;
-                    var topToFootDist = Vector3.Distance(topCollider, nextFoot);
-                    var hitDistance = Vector3.Distance(hitinfo.point, nextFoot);
-                    QueueGizmo((a) => { Gizmos.color = Color.white; });
-                    QueueGizmo((a) => { Gizmos.DrawSphere((Vector3)a[0], (float)a[1]); }, topCollider, 0.2f);
-                    QueueGizmo((a) => { Gizmos.color = new Color(1, 0, 1, 0.5f); });
-                    QueueGizmo((a) => { Gizmos.DrawWireSphere((Vector3)a[0], (float)a[1]); }, hitinfo.point, 0.25f);
-
-                    if (hitDistance <= topToFootDist)
-                    {
-                        FillCollider(nextFoot, topCollider);
-                    }
-                }
-            }
+            //void FillCollider(Vector3 foot, Vector3 top)
+            //{
+            //    const float padding = 0.1f;
+            //    Vector3 paddedFootPos = (foot + transform.up * padding);
+            //    Vector3 newCenter = (top + paddedFootPos) * 0.5f;
+            //    float newHeight = Vector3.Distance(top, paddedFootPos);
+            //    Collider.center = transform.InverseTransformPoint(newCenter);
+            //    Collider.height = newHeight;
+            //}
+            //void RevertCollider()
+            //{
+            //    Collider.center = originalColliderCenter;
+            //    Collider.height = originalColliderHeight;
+            //}
+            //void PerformWedgeCollision()
+            //{
+            //    var vel = Velocity * Time.fixedDeltaTime;
+            //    var nextHead = HeadPosition + vel;
+            //    Ray ray = new Ray(nextHead, transform.up);
+            //    if (Physics.Raycast(ray, out RaycastHit hitinfo, float.MaxValue, CollisionMask))
+            //    {
+            //        var nextFoot = FootPosition + vel;
+            //        Vector3 topCollider = transform.TransformPoint(Collider.center + Vector3.up * Collider.height * 0.5f) + vel;
+            //        var topToFootDist = Vector3.Distance(topCollider, nextFoot);
+            //        var hitDistance = Vector3.Distance(hitinfo.point, nextFoot);
+            //        QueueGizmo((a) => { Gizmos.color = Color.white; });
+            //        QueueGizmo((a) => { Gizmos.DrawSphere((Vector3)a[0], (float)a[1]); }, topCollider, 0.2f);
+            //        QueueGizmo((a) => { Gizmos.color = new Color(1, 0, 1, 0.5f); });
+            //        QueueGizmo((a) => { Gizmos.DrawWireSphere((Vector3)a[0], (float)a[1]); }, hitinfo.point, 0.25f);
+            //        if (hitDistance <= topToFootDist + 0.1f)
+            //        {
+            //            FillCollider(nextFoot, topCollider);
+            //        }
+            //    }
+            //}
 
             Debug.DrawRay(FootPosition, hit.normal * 10, Color.blue);
             Debug.DrawRay(transform.position, Velocity.normalized * 10);
@@ -559,11 +609,10 @@ namespace Limworks.PlayerController
             transform.position = lastPosition + Velocity * Time.fixedDeltaTime;
 
             //perform physics collision
-            transform.position = ApplyCollisionPhysics(transform.position, transform.rotation, ref Velocity, null,
-                Collider, CollisionQueryRadius, CollisionMask, out isColliding, 8);
+            transform.position = ApplyCollisionPhysics(transform.position, transform.rotation, ref Velocity, null, Collider, CollisionQueryRadius, CollisionMask, out isColliding, 8);
 
-            ReverCollider();
-            PerformWedgeCollision();
+            //RevertCollider();
+            //PerformWedgeCollision();
 
             if (groundingInfo.grounded)
             {
@@ -579,14 +628,15 @@ namespace Limworks.PlayerController
 
             CurrentMovingSpeed = Vector3.Distance(lastPosition, transform.position) / Time.fixedDeltaTime;
 
-            //after jumping reset jump
+            //reset inptus
             jump = 0;
+            inputForce = Vector3.zero;
         }
         private void OnDisable()
         {
             ClearGizmos();
         }
-        private void OnDrawGizmos()
+        private void OnDrawGizmosSelected()
         {
             Gizmos.matrix = transform.localToWorldMatrix;
             Gizmos.DrawWireSphere(FootPosition_local, 0.1f);
